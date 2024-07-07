@@ -67,16 +67,6 @@ static BOOL IsEnabled(NSString *key) {
 }
 %end
 
-// Fix Google Sign in by @PoomSmart and @level3tjg (qnblackcat/uYouPlus#684)
-%hook NSBundle
-- (NSDictionary *)infoDictionary {
-    NSMutableDictionary *info = %orig.mutableCopy;
-    if ([self isEqual:NSBundle.mainBundle])
-        info[@"CFBundleIdentifier"] = @"com.google.ios.youtube";
-    return info;
-}
-%end
-
 // Skips content warning before playing *some videos - @PoomSmart
 %hook YTPlayabilityResolutionUserActionUIController
 - (void)showConfirmAlert { [self confirmAlertDidPressConfirm]; }
@@ -171,7 +161,7 @@ static BOOL IsEnabled(NSString *key) {
 
 // Hide Home Tab - @bhackel
 %group gHideHomeTab
-%hook YTPivotBarViewController
+%hook YTPivotBarView
 - (void)setRenderer:(YTIPivotBarRenderer *)renderer {
     // Iterate over each renderer item
     NSUInteger indexToRemove = -1;
@@ -191,6 +181,35 @@ static BOOL IsEnabled(NSString *key) {
         [itemsArray removeObjectAtIndex:indexToRemove];
     }
     %orig;
+}
+%end
+// Fix bug where contents of leftmost tab is replaced by Home tab
+BOOL isTabSelected = NO;
+%hook YTPivotBarViewController
+- (void)viewDidAppear:(BOOL)animated {
+    %orig;
+    if (!isTabSelected) {
+        // Get the identifier of the selected pivot
+        NSString *selectedPivotIdentifier = self.selectedPivotIdentifier;
+        // Find any different tab to switch from by looping through the renderer items
+        YTIPivotBarRenderer *renderer = self.renderer;
+        NSArray <YTIPivotBarSupportedRenderers *> *itemsArray = renderer.itemsArray;
+        for (YTIPivotBarSupportedRenderers *item in itemsArray) {
+            YTIPivotBarItemRenderer *pivotBarItemRenderer = item.pivotBarItemRenderer;
+            NSString *pivotIdentifier = pivotBarItemRenderer.pivotIdentifier;
+            if (![pivotIdentifier isEqualToString:selectedPivotIdentifier]) {
+                // Switch to this tab
+                [self selectItemWithPivotIdentifier:pivotIdentifier];
+                break;
+            }
+        }
+        // Clear any cached controllers to delete the broken home tab
+        [self resetViewControllersCache];
+        // Switch back to the original tab
+        [self selectItemWithPivotIdentifier:selectedPivotIdentifier];
+        // Update flag to not do it again
+        isTabSelected = YES;
+    }
 }
 %end
 %end
@@ -369,47 +388,29 @@ static BOOL IsEnabled(NSString *key) {
 }
 %end
 
-// YTUnShorts - https://github.com/PoomSmart/YTUnShorts
-%hook YTIElementRenderer
+// Fix Casting: https://github.com/arichornlover/uYouEnhanced/issues/606#issuecomment-2098289942
+%group gFixCasting
+%hook YTColdConfig
+- (BOOL)cxClientEnableIosLocalNetworkPermissionReliabilityFixes { return YES; }
+- (BOOL)cxClientEnableIosLocalNetworkPermissionUsingSockets { return NO; }
+- (BOOL)cxClientEnableIosLocalNetworkPermissionWifiFixes { return YES; }
+%end
+%hook YTHotConfig
+- (BOOL)isPromptForLocalNetworkPermissionsEnabled { return YES; }
+%end
+%end
 
-static NSData *cellDividerData = nil;
-
-- (NSData *)elementData {
-    NSString *description = [self description];
-    
-    if (IsEnabled(@"UnShorts_enabled")) {
-        if ([description containsString:@"cell_divider"]) {
-            if (!cellDividerData) cellDividerData = %orig;
-            return cellDividerData;
-        }
-
-        BOOL hasShorts = ([description containsString:@"shorts_shelf.eml"] || 
-                          [description containsString:@"shorts_video_cell.eml"] || 
-                          [description containsString:@"6Shorts"]) && 
-                         ![description containsString:@"history*"];
-        BOOL hasShortsInHistory = [description containsString:@"compact_video.eml"] && 
-                                  [description containsString:@"youtube_shorts_"];
-
-        if (hasShorts || hasShortsInHistory) return cellDividerData;
-    }
-
-// Hide Community Posts - @michael-winay & @arichorn
-    if (IsEnabled(@"hideCommunityPosts_enabled")) {
-        if ([description containsString:@"post_base_wrapper.eml"]) {
-            return nil;
-        }
-    }
-    return %orig;
+// Seek anywhere gesture - @bhackel
+%hook YTColdConfig
+- (BOOL)speedMasterArm2FastForwardWithoutSeekBySliding {
+    return IsEnabled(@"seekAnywhere_enabled") ? NO : %orig;
 }
 %end
 
-// YTNoSuggestedVideo - https://github.com/bhackel/YTNoSuggestedVideo
-%hook YTMainAppVideoPlayerOverlayViewController
-- (bool)shouldShowAutonavEndscreen {
-    if (IsEnabled(@"noSuggestedVideo_enabled")) {
-        return false;
-    }
-    return %orig;
+// New Settings UI - @bhackel
+%hook YTColdConfig
+- (BOOL)mainAppCoreClientEnableCairoSettings { 
+    return IS_ENABLED(@"newSettingsUI_enabled"); 
 }
 %end
 
@@ -434,70 +435,6 @@ static NSData *cellDividerData = nil;
         return NO;
     }
     return %orig;
-}
-%end
-%end
-
-// YTSpeed - https://github.com/Lyvendia/YTSpeed
-%group gYTSpeed
-%hook YTVarispeedSwitchController
-- (id)init {
-	id result = %orig;
-
-	const int size = 17;
-        float speeds[] = {0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 2.75, 3.0, 3.25, 3.5, 3.75, 4.0, 5.0};
-        id varispeedSwitchControllerOptions[size];
-
-	for (int i = 0; i < size; ++i) {
-		id title = [NSString stringWithFormat:@"%.2fx", speeds[i]];
-		varispeedSwitchControllerOptions[i] = [[%c(YTVarispeedSwitchControllerOption) alloc] initWithTitle:title rate:speeds[i]];
-	}
-
-	NSUInteger count = sizeof(varispeedSwitchControllerOptions) / sizeof(id);
-	NSArray *varispeedArray = [NSArray arrayWithObjects:varispeedSwitchControllerOptions count:count];
-	MSHookIvar<NSArray *>(self, "_options") = varispeedArray;
-
-	return result;
-}
-%end
-
-%hook MLHAMQueuePlayer
-- (void)setRate:(float)rate {
-	MSHookIvar<float>(self, "_rate") = rate;
-	MSHookIvar<float>(self, "_preferredRate") = rate;
-
-	id player = MSHookIvar<HAMPlayerInternal *>(self, "_player");
-	[player setRate: rate];
-	
-	id stickySettings = MSHookIvar<MLPlayerStickySettings *>(self, "_stickySettings");
-	[stickySettings setRate: rate];
-
-	[self.playerEventCenter broadcastRateChange: rate];
-
-	YTSingleVideoController *singleVideoController = self.delegate;
-	[singleVideoController playerRateDidChange: rate];
-}
-%end
-
-%hook YTPlayerViewController
-%property (nonatomic, assign) float playbackRate;
-- (void)singleVideo:(id)video playbackRateDidChange:(float)rate {
-	%orig;
-}
-%end
-%end
-
-// YTStockVolumeHUD - https://github.com/lilacvibes/YTStockVolumeHUD
-%group gStockVolumeHUD
-%hook YTVolumeBarView
-- (void)volumeChanged:(id)arg1 {
-	%orig(nil);
-}
-%end
-
-%hook UIApplication 
-- (void)setSystemVolumeHUDEnabled:(BOOL)arg1 forAudioCategory:(id)arg2 {
-	%orig(true, arg2);
 }
 %end
 %end
@@ -614,6 +551,9 @@ static NSData *cellDividerData = nil;
 # pragma mark - ctor
 %ctor {
     %init;
+    // Access YouGroupSettings methods
+    dlopen([[NSString stringWithFormat:@"%@/Frameworks/YouGroupSettings.dylib", [[NSBundle mainBundle] bundlePath]] UTF8String], RTLD_LAZY);
+
     if (IsEnabled(@"hideCastButton_enabled")) {
         %init(gHideCastButton);
     }
@@ -637,12 +577,6 @@ static NSData *cellDividerData = nil;
     }
     if (IsEnabled(@"disableAmbientMode_enabled")) {
         %init(gDisableAmbientMode);
-    }
-    if (IsEnabled(@"ytSpeed_enabled")) {
-        %init(gYTSpeed);
-    }
-    if (IsEnabled(@"stockVolumeHUD_enabled")) {
-        %init(gStockVolumeHUD);
     }
     if (IsEnabled(@"disableAccountSection_enabled")) {
         %init(gDisableAccountSection);
@@ -674,7 +608,9 @@ static NSData *cellDividerData = nil;
     if (IsEnabled(@"hideHomeTab_enabled")) {
         %init(gHideHomeTab);
     }
-    
+    if (IsEnabled(@"fixCasting_enabled")) {
+        %init(gFixCasting);
+    }
 
     // Change the default value of some options
     NSArray *allKeys = [[[NSUserDefaults standardUserDefaults] dictionaryRepresentation] allKeys];
@@ -684,4 +620,10 @@ static NSData *cellDividerData = nil;
     if (![allKeys containsObject:@"YouPiPEnabled"]) { 
        [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"YouPiPEnabled"]; 
 	}
+    if (![allKeys containsObject:@"newSettingsUI_enabled"]) { 
+       [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"newSettingsUI_enabled"]; 
+    }
+    if (![allKeys containsObject:@"fixCasting_enabled"]) { 
+       [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"fixCasting_enabled"]; 
+    }
 }

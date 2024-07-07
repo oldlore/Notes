@@ -61,7 +61,6 @@
 - (void)setRate:(float)rate;
 @end
 
-// IAmYouTube
 @interface SSOConfiguration : NSObject
 @end
 
@@ -92,6 +91,14 @@
 
 @interface YTSegmentableInlinePlayerBarView
 @property (nonatomic, assign, readwrite) BOOL enableSnapToChapter;
+@end
+
+// Hide Home Tab - @bhackel
+@interface YTPivotBarViewController : UIViewController
+@property NSString *selectedPivotIdentifier;
+@property YTIPivotBarRenderer *renderer;
+- (void)selectItemWithPivotIdentifier:(NSString *)pivotIdentifier;
+- (void)resetViewControllersCache;
 @end
 
 // SponsorBlock button in Nav bar
