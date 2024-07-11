@@ -67,6 +67,41 @@ static BOOL IsEnabled(NSString *key) {
 }
 %end
 
+/* TEMP-DISABLED
+// Fix Google Sign in by @PoomSmart, @level3tjg & Dayanch96 (qnblackcat/uYouPlus#684)
+BOOL isSelf() {
+    NSArray *address = [NSThread callStackReturnAddresses];
+    Dl_info info = {0};
+    if (dladdr((void *)[address[2] longLongValue], &info) == 0) return NO;
+    NSString *path = [NSString stringWithUTF8String:info.dli_fname];
+    return [path hasPrefix:NSBundle.mainBundle.bundlePath];
+}
+%hook NSBundle
+- (NSString *)bundleIdentifier {
+    return isSelf() ? "com.google.ios.youtube" : %orig;
+}
+- (NSDictionary *)infoDictionary {
+    NSDictionary *dict = %orig;
+    if (!isSelf())
+        return %orig;
+    NSMutableDictionary *info = [dict mutableCopy];
+    if (info[@"CFBundleIdentifier"]) info[@"CFBundleIdentifier"] = @"com.google.ios.youtube";
+    if (info[@"CFBundleDisplayName"]) info[@"CFBundleDisplayName"] = @"YouTube";
+    if (info[@"CFBundleName"]) info[@"CFBundleName"] = @"YouTube";
+    return info;
+}
+- (id)objectForInfoDictionaryKey:(NSString *)key {
+    if (!isSelf())
+        return %orig;
+    if ([key isEqualToString:@"CFBundleIdentifier"])
+        return @"com.google.ios.youtube";
+    if ([key isEqualToString:@"CFBundleDisplayName"] || [key isEqualToString:@"CFBundleName"])
+        return @"YouTube";
+    return %orig;
+}
+%end
+*/
+
 // Skips content warning before playing *some videos - @PoomSmart
 %hook YTPlayabilityResolutionUserActionUIController
 - (void)showConfirmAlert { [self confirmAlertDidPressConfirm]; }
@@ -326,24 +361,6 @@ BOOL isTabSelected = NO;
 %end
 %end
 
-%group gDisableAmbientMode
-%hook YTColdConfig
-- (BOOL)disableCinematicForLowPowerMode { return NO; }
-- (BOOL)enableCinematicContainer { return NO; }
-- (BOOL)enableCinematicContainerOnClient { return NO; }
-- (BOOL)enableCinematicContainerOnTablet { return NO; }
-- (BOOL)enableTurnOffCinematicForFrameWithBlackBars { return YES; }
-- (BOOL)enableTurnOffCinematicForVideoWithBlackBars { return YES; }
-- (BOOL)iosCinematicContainerClientImprovement { return NO; }
-- (BOOL)iosEnableGhostCardInlineTitleCinematicContainerFix { return NO; }
-- (BOOL)iosUseFineScrubberMosaicStoreForCinematic { return NO; }
-- (BOOL)mainAppCoreClientEnableClientCinematicPlaylists { return NO; }
-- (BOOL)mainAppCoreClientEnableClientCinematicPlaylistsPostMvp { return NO; }
-- (BOOL)mainAppCoreClientEnableClientCinematicTablets { return NO; }
-- (BOOL)iosEnableFullScreenAmbientMode { return NO; }
-%end
-%end
-
 // Hide YouTube Heatwaves in Video Player (YouTube v17.19.2-present) - @level3tjg - https://www.reddit.com/r/jailbreak/comments/v29yvk/
 %group gHideHeatwaves
 %hook YTInlinePlayerBarContainerView
@@ -411,6 +428,123 @@ BOOL isTabSelected = NO;
 %hook YTColdConfig
 - (BOOL)mainAppCoreClientEnableCairoSettings { 
     return IS_ENABLED(@"newSettingsUI_enabled"); 
+}
+%end
+
+// Fullscreen to the Right (iPhone-exclusive) - @arichornlover
+// NOTE: Please turn off the “Portrait Fullscreen” Option in YTLite while the option "Fullscreen to the Right" is enabled below.
+%group gFullscreenToTheRight
+%hook YTWatchViewController
+- (UIInterfaceOrientation)preferredInterfaceOrientationForPresentation {
+    if ([self isFullscreen] && UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPhone) {
+        return UIInterfaceOrientationLandscapeRight;
+    }
+    return %orig;
+}
+- (UIInterfaceOrientationMask)supportedInterfaceOrientations {
+    if ([self isFullscreen] && UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPhone) {
+        return UIInterfaceOrientationMaskLandscape;
+    }
+    return %orig;
+}
+%new
+- (void)forceRightFullscreenOrientation {
+    if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPhone) {
+        NSNumber *value = [NSNumber numberWithInt:UIInterfaceOrientationLandscapeRight];
+        [[UIDevice currentDevice] setValue:value forKey:@"orientation"];
+    }
+}
+%end
+%end
+
+// YTTapToSeek - https://github.com/bhackel/YTTapToSeek
+%group gYTTapToSeek
+    %hook YTInlinePlayerBarContainerView
+    - (void)didPressScrubber:(id)arg1 {
+        %orig;
+        // Get access to the seekToTime method
+        YTMainAppVideoPlayerOverlayViewController *mainAppController = [self.delegate valueForKey:@"_delegate"];
+        YTPlayerViewController *playerViewController = [mainAppController valueForKey:@"parentViewController"];
+        // Get the X position of this tap from arg1
+        UIGestureRecognizer *gestureRecognizer = (UIGestureRecognizer *)arg1;
+        CGPoint location = [gestureRecognizer locationInView:self];
+        CGFloat x = location.x;
+        // Get the associated proportion of time using scrubRangeForScrubX
+        double timestampFraction = [self scrubRangeForScrubX:x];
+        // Get the timestamp from the fraction
+        double timestamp = [mainAppController totalTime] * timestampFraction;
+        // Jump to the timestamp
+        [playerViewController seekToTime:timestamp];
+    }
+    %end
+%end
+
+// Disable pull to enter vertical/portrait fullscreen gesture - @bhackel
+// This was introduced in version 19.XX
+// This does not apply to portrait videos
+%group gDisablePullToFull
+%hook YTWatchPullToFullController
+- (BOOL)shouldRecognizeOverscrollEventsFromWatchOverscrollController:(id)arg1 {
+    // Get the current player orientation
+    YTWatchViewController *watchViewController = (YTWatchViewController *) self.playerViewSource;
+    NSUInteger allowedFullScreenOrientations = [watchViewController allowedFullScreenOrientations];
+    // Check if the current player orientation is portrait
+    if (allowedFullScreenOrientations == UIInterfaceOrientationMaskAllButUpsideDown
+            || allowedFullScreenOrientations == UIInterfaceOrientationMaskPortrait
+            || allowedFullScreenOrientations == UIInterfaceOrientationMaskPortraitUpsideDown) {
+        return %orig;
+    } else {
+        return NO;
+    }
+}
+%end
+%end
+
+// Always use remaining time in the video player - @bhackel
+%hook YTPlayerBarController
+// When a new video is played, enable time remaining flag
+- (void)setActiveSingleVideo:(id)arg1 {
+    %orig;
+    if (IS_ENABLED(@"alwaysShowRemainingTime_enabled")) {
+        // Get the player bar view
+        YTInlinePlayerBarContainerView *playerBar = self.playerBar;
+        if (playerBar) {
+            // Enable the time remaining flag
+            playerBar.shouldDisplayTimeRemaining = YES;
+        }
+    }
+}
+%end
+
+// Disable toggle time remaining - @bhackel
+%hook YTInlinePlayerBarContainerView
+- (void)setShouldDisplayTimeRemaining:(BOOL)arg1 {
+    if (IS_ENABLED(@"disableRemainingTime_enabled")) {
+        // Set true if alwaysShowRemainingTime
+        if (IS_ENABLED(@"alwaysShowRemainingTime_enabled")) {
+            %orig(YES);
+        } else {
+            %orig(NO);
+        }
+        return;
+    }
+    %orig;
+}
+%end
+
+// Disable Ambient Mode - @bhackel
+%hook YTWatchCinematicContainerController
+- (BOOL)isCinematicLightingAvailable {
+    // Check if we are in fullscreen or not, then decide if ambient is disabled
+    YTWatchViewController *watchViewController = (YTWatchViewController *) self.parentResponder;
+    BOOL isFullscreen = watchViewController.fullscreen;
+    if (IsEnabled(@"disableAmbientModePortrait_enabled") && !isFullscreen) {
+        return NO;   
+    }
+    if (IsEnabled(@"disableAmbientModeFullscreen_enabled") && isFullscreen) {
+        return NO;
+    }
+    return %orig;
 }
 %end
 
@@ -575,9 +709,6 @@ BOOL isTabSelected = NO;
     if (IsEnabled(@"ytNoModernUI_enabled")) {
         %init(gYTNoModernUI);
     }
-    if (IsEnabled(@"disableAmbientMode_enabled")) {
-        %init(gDisableAmbientMode);
-    }
     if (IsEnabled(@"disableAccountSection_enabled")) {
         %init(gDisableAccountSection);
     }
@@ -610,6 +741,15 @@ BOOL isTabSelected = NO;
     }
     if (IsEnabled(@"fixCasting_enabled")) {
         %init(gFixCasting);
+    }
+    if (IsEnabled(@"fullscreenToTheRight_enabled")) {
+        %init(gFullscreenToTheRight);
+    }
+    if (IsEnabled(@"YTTapToSeek_enabled")) {
+        %init(gYTTapToSeek);
+    }
+    if (IsEnabled(@"disablePullToFull_enabled")) {
+        %init(gDisablePullToFull);
     }
 
     // Change the default value of some options
